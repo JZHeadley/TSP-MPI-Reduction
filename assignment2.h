@@ -9,6 +9,8 @@
 
 using namespace std;
 
+#define ISSQUARE(x)  (sqrt(x) - floor(sqrt(x)) == 0)
+
 typedef struct
 {
     int id;
@@ -24,16 +26,6 @@ typedef struct
 
 vector<vector<vector<City>>> distributeCities(int numCitiesPerBlock, int numBlocksInRow, int numBlocksInCol, int gridDimX, int gridDimY);
 void distributeBlocks(vector<vector<vector<City>>> blockedCities);
-
-bool isPerfectSquare(long double x)
-{
-    // Find floating point value of
-    // square root of x.
-    long double sr = sqrt(x);
-
-    // If square root is an integer
-    return ((sr - floor(sr)) == 0);
-}
 
 double fRand(double fMin, double fMax)
 {

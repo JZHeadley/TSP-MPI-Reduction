@@ -21,6 +21,7 @@ void initMPI()
     MPI_Type_create_struct(numItems, blockLengths, offsets, types, &mpi_city_type);
     MPI_Type_commit(&mpi_city_type);
 
+    MPI_Comm_rank(MPI_COMM_WORLD, &procNum);
     MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 }
 
@@ -28,7 +29,7 @@ vector<int> getBlocksPerDim(int numBlocks)
 {
     int numBlocksInRow;
     int numBlocksInCol;
-    if (isPerfectSquare(numBlocks))
+    if (ISSQUARE(numBlocks))
     {
         numBlocksInRow = sqrt(numBlocks);
         numBlocksInCol = sqrt(numBlocks);
@@ -68,8 +69,17 @@ int main(int argc, char **argv)
     int gridDimY = atoi(argv[4]);
     if (numCitiesPerBlock > 16)
     {
-        printf("Come on... We don't want to wait forever so lets just have you retry that with less than 16 cities per block...\n");
+        if (procNum == 0)
+            printf("Come on... We don't want to wait forever so lets just have you retry that with less than 16 cities per block...\n");
+        MPI_Finalize();
         exit(1337);
+    }
+    else if (numBlocks < numProcs)
+    {
+        if (procNum == 0)
+            printf("Either run it with fewer processors or more blocks...I don't feel like writing the logic to kill excess processes\n");
+        MPI_Finalize();
+        exit(1477);
     }
     MPI_Comm grid_comm;
     vector<int> procDims = getBlocksPerDim(numProcs);
@@ -102,7 +112,6 @@ int main(int argc, char **argv)
         // receive our blocks for all other processes here and run tsp on them
 
         // might have to write the code to do this TSP-merge reduction ourselves...
-        
     }
     if (procNum == 0)
     {
