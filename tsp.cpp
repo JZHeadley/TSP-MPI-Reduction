@@ -1,19 +1,27 @@
 #include <string.h>
-#include <mpi.h>
 #include <time.h>
+#include <limits.h>
 
 #include "assignment2.h"
+
+#define BLOCK_NUM_TAG 6
+#define NUM_BLOCKS_TAG 66
+#define BLOCK_CITIES_TAG 666
+#define NUM_CITIES_TAG 6666
+#define CITIES_RESULT_TAG 66666
+#define COST_RESULT_TAG 7
+#define NUM_BLOCKS_RECV_TAG 77
 
 int numProcs;
 int procNum;
 int coords[2];
+MPI_Datatype mpi_city_type;
 
 void initMPI()
 {
     const int numItems = 3;
     int blockLengths[3] = {1, 1, 1};
     MPI_Datatype types[3] = {MPI_INT, MPI_DOUBLE, MPI_DOUBLE};
-    MPI_Datatype mpi_city_type;
     MPI_Aint offsets[3];
     offsets[0] = offsetof(City, id);
     offsets[1] = offsetof(City, x);
@@ -48,6 +56,41 @@ vector<int> getBlocksPerDim(int numBlocks)
     return vector<int>({numBlocksInRow, numBlocksInCol});
 }
 
+vector<vector<City>> distributeBlocks(vector<vector<vector<City>>> blockedCities, int numBlocks, int numCitiesPerBlock, MPI_Comm comm)
+{
+    vector<vector<City>> blocks = flatten(blockedCities);
+    // int numBlocksForMaster = (int)ceil(numBlocks / (float)(numProcs));
+    int blocksLeft = numBlocks; // - numBlocksForMaster;
+    int blockToSend = 0;        //numBlocksForMaster;
+    MPI_Request request;
+    int *blocksToSend = (int *)calloc(sizeof(int), numProcs);
+    // printf("sending %i blocks to process %i\n\n", numBlocksForMaster, 0);
+
+    while (blocksLeft)
+    {
+        blocksToSend[blocksLeft % numProcs]++;
+        blocksLeft--;
+    }
+    for (int i = 0; i < numProcs; i++) // for each worker process
+    {
+        // blocksToSend[i] = min((int)ceil((numBlocks) / (float)(numProcs)), blocksLeft);
+        printf("sending %i blocks to process %i\n\n", blocksToSend[i], i);
+        // // blocksLeft -= blocksToSend[i];
+        MPI_Isend(&blocksToSend[i], 1, MPI_INT, i, NUM_BLOCKS_RECV_TAG, comm, &request);
+        for (int j = 0; j < blocksToSend[i]; j++) // send min(ceil(n / (float)numProcesses), numProcessesLeft) processes
+        {
+            City *block = (City *)malloc(numCitiesPerBlock * sizeof(City));
+            copy(blocks[blockToSend].begin(), blocks[blockToSend].end(), block);
+            MPI_Isend(block, numCitiesPerBlock, mpi_city_type, i, BLOCK_CITIES_TAG, comm, &request);
+            blockToSend++;
+            blocksLeft--;
+        }
+    }
+    free(blocksToSend);
+
+    return vector<vector<City>>();
+}
+
 int main(int argc, char **argv)
 {
     time_t t;
@@ -74,33 +117,35 @@ int main(int argc, char **argv)
         MPI_Finalize();
         exit(1337);
     }
-    else if (numBlocks < numProcs)
-    {
-        if (procNum == 0)
-            printf("Either run it with fewer processors or more blocks...I don't feel like writing the logic to kill excess processes\n");
-        MPI_Finalize();
-        exit(1477);
-    }
+
     MPI_Comm grid_comm;
     vector<int> procDims = getBlocksPerDim(numProcs);
-    int wrap[2] = {1, 1};
+    int wrap[2] = {0, 0};
     MPI_Cart_create(MPI_COMM_WORLD, 2, &procDims[0], wrap, 0, &grid_comm);
     MPI_Comm_rank(grid_comm, &procNum);
+    MPI_Status status;
 
     MPI_Cart_coords(grid_comm, procNum, 2, coords);
     // printf("proc %i is at ( %i, %i )\n", procNum, coords[0], coords[1]);
     if (procNum == 0)
         printf("We have %i cities for each of our %i blocks\n", numCitiesPerBlock, numBlocks);
-
+    vector<BlockSolution> blockSolutions{};
+    MPI_Request request;
     if (procNum == 0)
     {
         vector<int> blockedDims = getBlocksPerDim(numBlocks);
         // generate our cities in their respective blocks
         vector<vector<vector<City>>> blockedCities = distributeCities(numCitiesPerBlock, blockedDims[0], blockedDims[1], gridDimX, gridDimY);
-        // Distribute our blocks to each processor saving one of the blocks for our main block
-        // distributeBlocks(blockedCities);
+        // Distribute our blocks to each processor saving some of the blocks for our main block
+        vector<vector<City>> blocksForHead = distributeBlocks(blockedCities, numBlocks, numCitiesPerBlock, grid_comm);
 
         // deal with the leftover block
+        for (int i = 0; i < blocksForHead.size(); i++)
+        {
+            blockSolutions.push_back(tsp(blocksForHead[i]));
+        }
+
+        // perform a local reduction within the process since we might have multiple blocks per process
 
         // figure out how to do a reduction across the rows using the TSP-merge technique
         // then do it across the columns
@@ -109,9 +154,25 @@ int main(int argc, char **argv)
     }
     else
     {
-        // receive our blocks for all other processes here and run tsp on them
-
-        // might have to write the code to do this TSP-merge reduction ourselves...
+        // Kill off uneccesary blocks
+        if (procNum > numBlocks)
+        {
+            MPI_Finalize();
+            return 0;
+        }
+        // receive our blocks for head process here and run tsp on them
+        int numBlocksToRecv;
+        MPI_Recv(&numBlocksToRecv, 1, MPI_INT, 0, NUM_BLOCKS_RECV_TAG, grid_comm, &status);
+        while (numBlocksToRecv)
+        {
+            City *block = (City *)malloc(numCitiesPerBlock * sizeof(City));
+            MPI_Irecv(block, numCitiesPerBlock, mpi_city_type, 0, BLOCK_CITIES_TAG, grid_comm, &request);
+            vector<City> cities;
+            cities.assign(block, block + numCitiesPerBlock);
+            blockSolutions.push_back(tsp(cities));
+            numBlocksToRecv--;
+        }
+        // perform a local reduction within the process since we might have multiple blocks per process
     }
     if (procNum == 0)
     {
@@ -155,4 +216,111 @@ vector<vector<vector<City>>> distributeCities(int numCitiesPerBlock, int numBloc
         }
     }
     return blockedCities;
+}
+
+BlockSolution tsp(vector<City> cities)
+{
+
+    double **distances = computeDistanceMatrix(cities);
+    map<long long int, PathCost> solutionsMap;
+    vector<int> minPath{};
+    double minCost = INT_MAX;
+
+    int start = 0;
+    int numCities = cities.size();
+    long long key = 0x00000;
+    vector<int> cityNums;
+    // convert cities back to integer array
+    for (int i = 1; i < numCities; i++)
+    {
+        cityNums.push_back(i);
+    }
+
+    // initalize first 2 levels of the lookup table
+    for (int i = 1; i < numCities; i++)
+    {
+        for (int j = 1; j < numCities; j++)
+        {
+            if (i == j)
+                continue;
+            vector<int> iSet{i};
+            genKey(iSet, j, key);
+            PathCost pathCost;
+            vector<int> path{0, i};
+            pathCost.path = path;
+            pathCost.cost = distances[i][j] + distances[0][i];
+            solutionsMap.insert(pair<long long, PathCost>(key, pathCost));
+        }
+    }
+    //we're good so far...
+    double currentCost = 0;
+
+    for (int i = 2; i < numCities; i++)
+    { // iterate through all cardinalities of subsets
+        printf("working on subsets of size %i\n", i);
+        vector<vector<int>> subsets = generateSubsets(i, cityNums.size());
+        for (vector<int> set : subsets)
+        {
+            for (int k : set)
+            {
+                vector<int> kSet{k};
+                vector<int> diff;
+                set_difference(set.begin(), set.end(), kSet.begin(), kSet.end(), inserter(diff, diff.begin()));
+                double minCost = INT_MAX;
+                vector<int> minPath;
+                int bestM;
+                // we initialized 2 levels earlier so this for loop will always be able to run.
+                for (int m : diff)
+                {
+                    vector<int> mSet{m}; // need to generate the key for k-1
+                    vector<int> noMoreM; // get rid of m because thats where we're going
+                    set_difference(diff.begin(), diff.end(), mSet.begin(), mSet.end(), inserter(noMoreM, noMoreM.begin()));
+
+                    genKey(noMoreM, m, key);
+                    currentCost = solutionsMap[key].cost + distances[m][k];
+                    if (currentCost < minCost)
+                    {
+                        minCost = currentCost;
+                        minPath = solutionsMap[key].path;
+                        bestM = m;
+                    }
+                }
+                genKey(diff, k, key);
+
+                PathCost pathCost;
+                pathCost.cost = minCost;
+                minPath.push_back(bestM);
+                pathCost.path = minPath;
+                solutionsMap.insert(pair<long long, PathCost>(key, pathCost));
+            }
+        }
+    }
+
+    int bestM;
+    for (int m : cityNums)
+    {
+        vector<int> mSet{m}; // need to generate the key for k-1
+        vector<int> noMoreM; // get rid of m because thats where we're going
+        set_difference(cityNums.begin(), cityNums.end(), mSet.begin(), mSet.end(), inserter(noMoreM, noMoreM.begin()));
+
+        genKey(noMoreM, m, key);
+        currentCost = solutionsMap[key].cost + distances[m][0];
+        if (currentCost < minCost)
+        {
+            minCost = currentCost;
+            vector<int> path = solutionsMap[key].path;
+            minPath = path;
+            bestM = m;
+        }
+    }
+    free(distances);
+
+    minPath.push_back(bestM);
+    minPath.push_back(0);
+    BlockSolution blockSolution;
+    vector<City> truePath = convPathToCityPath(cities, minPath);
+    blockSolution.path = truePath;
+    blockSolution.cost = minCost;
+    blockSolution.blockId = procNum;
+    return blockSolution;
 }

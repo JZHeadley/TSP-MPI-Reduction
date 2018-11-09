@@ -1,15 +1,14 @@
-#include <fstream>
-#include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <algorithm>
 #include <iterator>
 #include <vector>
+#include <mpi.h>
 
 using namespace std;
 
-#define ISSQUARE(x)  (sqrt(x) - floor(sqrt(x)) == 0)
+#define ISSQUARE(x) (sqrt(x) - floor(sqrt(x)) == 0)
 
 typedef struct
 {
@@ -24,8 +23,63 @@ typedef struct
     vector<int> path;
 } PathCost;
 
+typedef struct
+{
+    int blockId;
+    vector<City> path;
+    double cost;
+} BlockSolution;
+
+typedef struct
+{
+    int threadId;
+    vector<City> cities;
+} TSPArgs;
+
+struct sortByX
+{
+    inline bool operator()(const City city1, const City &city2)
+    {
+        return (city1.x < city2.x);
+    }
+};
+
+struct sortByY
+{
+    inline bool operator()(const City city1, const City &city2)
+    {
+        return (city1.y < city2.y);
+    }
+};
+BlockSolution tsp(vector<City> cities);
+
 vector<vector<vector<City>>> distributeCities(int numCitiesPerBlock, int numBlocksInRow, int numBlocksInCol, int gridDimX, int gridDimY);
-void distributeBlocks(vector<vector<vector<City>>> blockedCities);
+
+vector<vector<City>> distributeBlocks(vector<vector<vector<City>>> blockedCities, int numBlocks, int numCitiesPerBlock, MPI_Comm comm);
+
+template <typename T>
+vector<T> flatten(const vector<vector<T>> &v)
+{
+    // https://stackoverflow.com/a/17299623
+    size_t total_size = 0;
+    for (const auto &sub : v)
+        total_size += sub.size(); // I wish there was a transform_accumulate
+    vector<T> result;
+    result.reserve(total_size);
+    for (const auto &sub : v)
+        result.insert(result.end(), sub.begin(), sub.end());
+    return result;
+}
+
+vector<City> convPathToCityPath(vector<City> cities, vector<int> positions)
+{
+    vector<City> truePath{};
+    for (int cityNum : positions)
+    {
+        truePath.push_back(cities[cityNum]);
+    }
+    return truePath;
+}
 
 double fRand(double fMin, double fMax)
 {
@@ -82,58 +136,9 @@ void printMatrixArray(vector<City> matrix, int rowWidth, int numElements)
     }
 }
 
-typedef struct
-{
-    int blockId;
-    vector<City> path;
-    double cost;
-} BlockSolution;
-
-typedef struct
-{
-    int threadId;
-    vector<City> cities;
-} TSPArgs;
-
-struct sortByX
-{
-    inline bool operator()(const City city1, const City &city2)
-    {
-        return (city1.x < city2.x);
-    }
-};
-
-struct sortByY
-{
-    inline bool operator()(const City city1, const City &city2)
-    {
-        return (city1.y < city2.y);
-    }
-};
-
 double distance(City c1, City c2)
 {
     return sqrt(pow(c1.x - c2.x, 2) + pow(c1.y - c2.y, 2));
-}
-
-vector<City> readCities(char *filePath)
-{
-    vector<City> cities;
-    ifstream file(filePath);
-    double x, y;
-    int id = 0;
-    // Reading in the cities tried to methodize this and failed
-    while (file >> x >> y)
-    {
-        City city;
-        city.id = id;
-        city.x = x;
-        city.y = y;
-        cities.push_back(city);
-        id++;
-    }
-    printf("We just read in %lu cities\n", cities.size());
-    return cities;
 }
 
 void genKey(vector<int> set, int z, long long &key)
