@@ -136,7 +136,7 @@ void printMatrixArray(vector<City> matrix, int rowWidth, int numElements)
     }
 }
 
-double distance(City c1, City c2)
+inline double distance(City c1, City c2)
 {
     return sqrt(pow(c1.x - c2.x, 2) + pow(c1.y - c2.y, 2));
 }
@@ -206,6 +206,19 @@ void printPath(vector<int> path)
         printf("%i -> ", path[i]);
     }
     printf("%i", path[(int)path.size() - 1]);
+
+    printf("\n");
+}
+
+void printPath(vector<City> path)
+{
+
+    printf("path is: ");
+    for (int i = 0; i < (int)path.size() - 1; i++)
+    {
+        printf("%i -> ", path[i].id);
+    }
+    printf("%i", path[(int)path.size() - 1].id);
 
     printf("\n");
 }

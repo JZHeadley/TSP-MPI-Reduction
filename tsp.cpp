@@ -1,6 +1,7 @@
 #include <string.h>
 #include <time.h>
 #include <limits.h>
+#include <utility>
 
 #include "assignment2.h"
 
@@ -91,6 +92,89 @@ vector<vector<City>> distributeBlocks(vector<vector<vector<City>>> blockedCities
     return vector<vector<City>>();
 }
 
+inline float swapPairCost(pair<City, City> left, pair<City, City> right)
+{
+    return (distance(left.first, right.second) + distance(left.second, right.first) - distance(left.first, left.second) - distance(right.first, right.second));
+}
+
+BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2)
+{
+    int size = (solution1.path.size() >= solution2.path.size()) ? solution1.path.size() : solution2.path.size();
+    double bestSwapCost = INT_MAX;
+    vector<City> cities1 = solution1.path;
+    vector<City> cities2 = solution2.path;
+    pair<City, City> cityPair1;
+    pair<City, City> cityPair2;
+    pair<pair<City, City>, pair<City, City>> bestSwapEdges;
+    double swapCost;
+    switch (size)
+    {
+    case 1 || 0:
+        throw invalid_argument("can't merge paths of size 1");
+        break;
+    case 2:
+        break;
+
+    default:
+        for (int i = 0; i < cities1.size(); i++)
+        {
+            cityPair1 = make_pair(cities1[0], cities1[1]);
+            for (int j = 0; j < cities2.size(); j++)
+            {
+                cityPair2 = make_pair(cities2[0], cities2[1]);
+                swapCost = swapPairCost(cityPair1, cityPair2);
+                if (swapCost < bestSwapCost)
+                {
+                    bestSwapCost = swapCost;
+                    bestSwapEdges = make_pair(cityPair1, cityPair2);
+                }
+                rotate(cities2.begin(), cities2.begin() + 1, cities2.end());
+            }
+            rotate(cities1.begin(), cities1.begin() + 1, cities1.end());
+        }
+        break;
+    }
+
+    cities1 = solution1.path;
+    cities2 = solution2.path;
+    cities2.pop_back();
+    printPath(cities1);
+    printf("best swap is from cities1 %i to cities2 %i and cities2 %i to cities1 %i\n",
+           bestSwapEdges.first.first.id, bestSwapEdges.second.first.id, bestSwapEdges.second.second.id, bestSwapEdges.first.second.id);
+    while (cities2[0].id != bestSwapEdges.second.first.id)
+    {
+        rotate(cities2.begin(), cities2.begin() + 1, cities2.end());
+    }
+    // do a final rotation so that the path to add is now essentially in order but backwards
+    rotate(cities2.begin(), cities2.begin() + 1, cities2.end());
+
+    printPath(cities2);
+    vector<City> path;
+    for (int i = 0; i < cities1.size(); i++)
+    {
+        // we should be at the start of the new edge in left block
+        // we also should already have block 2 rotated so the right half of this edge is at the head
+        if (cities1[i].id == bestSwapEdges.first.first.id)
+        {
+            path.push_back(cities1[i]);
+
+            for (int j = cities2.size() - 1; j >= 0; j--)
+            {
+                path.push_back(cities2[j]);
+            }
+        }
+        else
+        {
+            path.push_back(cities1[i]);
+        }
+    }
+    BlockSolution merged;
+    merged.blockId = procNum;
+    merged.cost = solution1.cost + solution2.cost + bestSwapCost - distance(bestSwapEdges.first.first, bestSwapEdges.first.second) - distance(bestSwapEdges.second.first, bestSwapEdges.second.second);
+    merged.path = path;
+    printPath(path);
+    return merged;
+}
 int main(int argc, char **argv)
 {
     time_t t;
@@ -146,7 +230,16 @@ int main(int argc, char **argv)
         }
 
         // perform a local reduction within the process since we might have multiple blocks per process
-
+        BlockSolution solution1;
+        BlockSolution solution2;
+        while (blockSolutions.size() > 1)
+        {
+            solution1 = blockSolutions[0];
+            blockSolutions.erase(blockSolutions.begin());
+            solution2 = blockSolutions[0];
+            blockSolutions.erase(blockSolutions.begin());
+            blockSolutions.insert(blockSolutions.begin(), mergeBlocks(solution1, solution2));
+        }
         // figure out how to do a reduction across the rows using the TSP-merge technique
         // then do it across the columns
 
@@ -173,6 +266,16 @@ int main(int argc, char **argv)
             numBlocksToRecv--;
         }
         // perform a local reduction within the process since we might have multiple blocks per process
+        BlockSolution solution1;
+        BlockSolution solution2;
+        while (blockSolutions.size() > 1)
+        {
+            solution1 = blockSolutions[0];
+            blockSolutions.erase(blockSolutions.begin());
+            solution2 = blockSolutions[0];
+            blockSolutions.erase(blockSolutions.begin());
+            blockSolutions.insert(blockSolutions.begin(), mergeBlocks(solution1, solution2));
+        }
     }
     if (procNum == 0)
     {
@@ -257,7 +360,7 @@ BlockSolution tsp(vector<City> cities)
 
     for (int i = 2; i < numCities; i++)
     { // iterate through all cardinalities of subsets
-        printf("working on subsets of size %i\n", i);
+        // printf("working on subsets of size %i\n", i);
         vector<vector<int>> subsets = generateSubsets(i, cityNums.size());
         for (vector<int> set : subsets)
         {
