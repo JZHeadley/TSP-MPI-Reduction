@@ -20,7 +20,6 @@ int procNum;
 int coords[2];
 MPI_Datatype mpi_city_type;
 MPI_Datatype mpi_block_solution_type;
-MPI_Op mpi_tsp_merge_op;
 
 void initMPI()
 {
@@ -34,11 +33,10 @@ void initMPI()
     MPI_Type_create_struct(numItems, blockLengths, offsets, types, &mpi_city_type);
     MPI_Type_commit(&mpi_city_type);
 
-    MPI_Op_create((MPI_User_function *)mergeBlocks, 0, &mpi_tsp_merge_op);
-
     MPI_Comm_rank(MPI_COMM_WORLD, &procNum);
     MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 }
+
 double pathDistance(vector<City> path)
 {
     City previous = path[0];
@@ -231,8 +229,8 @@ BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2)
     cities1 = solution1.path;
     cities2 = solution2.path;
     cities2.pop_back(); // remove the final node so we're not circular anymore
-    printPath(cities1);
-    printPath(cities2);
+    // printPath(cities1);
+    // printPath(cities2);
     printf("best swap is from cities1 %i to cities2 %i and cities2 %i to cities1 %i\n",
            bestSwapEdges.first.first.id, bestSwapEdges.second.first.id, bestSwapEdges.second.second.id, bestSwapEdges.first.second.id);
     while (cities2[0].id != bestSwapEdges.second.first.id)
@@ -242,31 +240,30 @@ BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2)
     // do a final rotation so that the path to add is now essentially in order but backwards
     rotate(cities2.begin(), cities2.begin() + 1, cities2.end());
 
-    printPath(cities2);
+    // printPath(cities2);
     vector<City> path;
+    bool flag = true;
     for (int i = 0; i < cities1.size(); i++)
     {
+        path.push_back(cities1[i]);
         // we should be at the start of the new edge in left block
         // we also should already have block 2 rotated so the right half of this edge is at the head
-        if (cities1[i].id == bestSwapEdges.first.first.id)
+        if ((cities1[i].id == bestSwapEdges.first.first.id || cities1[i].id == bestSwapEdges.first.second.id) && flag)
         {
-            path.push_back(cities1[i]);
-
+            flag = false;
             for (int j = cities2.size() - 1; j >= 0; j--)
             {
                 path.push_back(cities2[j]);
             }
         }
-        else
-        {
-            path.push_back(cities1[i]);
-        }
     }
+
     BlockSolution merged;
     merged.blockId = procNum;
-    merged.cost = solution1.cost + solution2.cost + bestSwapCost - distance(bestSwapEdges.first.first, bestSwapEdges.first.second) - distance(bestSwapEdges.second.first, bestSwapEdges.second.second);
+    merged.cost = solution1.cost + solution2.cost + bestSwapCost; // - distance(bestSwapEdges.first.first, bestSwapEdges.first.second) - distance(bestSwapEdges.second.first, bestSwapEdges.second.second);
     merged.path = path;
-    printPath(path);
+    printf("path size is %i\n", path.size());
+    // printPath(path);
     printf("\n");
     return merged;
 }
