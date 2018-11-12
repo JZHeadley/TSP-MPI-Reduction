@@ -2,6 +2,7 @@
 #include <time.h>
 #include <limits.h>
 #include <utility>
+#include <cmath>
 
 #include "assignment2.h"
 
@@ -12,11 +13,14 @@
 #define CITIES_RESULT_TAG 66666
 #define COST_RESULT_TAG 7
 #define NUM_BLOCKS_RECV_TAG 77
+#define PATH_COST_TAG 777
 
 int numProcs;
 int procNum;
 int coords[2];
 MPI_Datatype mpi_city_type;
+MPI_Datatype mpi_block_solution_type;
+MPI_Op mpi_tsp_merge_op;
 
 void initMPI()
 {
@@ -30,8 +34,93 @@ void initMPI()
     MPI_Type_create_struct(numItems, blockLengths, offsets, types, &mpi_city_type);
     MPI_Type_commit(&mpi_city_type);
 
+    MPI_Op_create((MPI_User_function *)mergeBlocks, 0, &mpi_tsp_merge_op);
+
     MPI_Comm_rank(MPI_COMM_WORLD, &procNum);
     MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
+}
+
+BlockSolution MPI_ManualReduce(BlockSolution solution, MPI_Comm comm)
+{
+    // I came up with the same idea as this guy and am just using his code as a base and modifying it to my need
+    // I just don't feel like trying to think about all the reduction math from scratch https://gist.github.com/rmcgibbo/7178576
+    int recvbuffer;
+    int tag = 0;
+    int size;
+    int rank;
+    int recvNumCities;
+    MPI_Comm_rank(comm, &rank);
+    MPI_Comm_size(comm, &size);
+    const int lastpower = 1 << (int)log2(size);
+    MPI_Status status;
+    City *recvCities;
+    City *sendCities;
+    double recvPathCost;
+    vector<City> path;
+
+    // each of the ranks greater than the last power of 2 less than size
+    // need to downshift their data, since the binary tree reduction below
+    // only works when N is a power of two.
+    for (int i = lastpower; i < size; i++)
+        if (rank == i)
+        {
+            printf("sending blocks in %i to %i\n", rank, i - lastpower);
+            int numCities = solution.path.size();
+            MPI_Send(&numCities, 1, MPI_INT, i - lastpower, NUM_CITIES_TAG, comm);
+            sendCities = (City *)malloc(sizeof(City) * numCities);
+            copy(solution.path.begin(), solution.path.end(), sendCities);
+            MPI_Send(&sendCities, numCities, mpi_city_type, i - lastpower, tag, comm);
+            MPI_Send(&solution.cost, 1, MPI_DOUBLE, i - lastpower, PATH_COST_TAG, comm);
+        }
+    for (int i = 0; i < size - lastpower; i++)
+    {
+        if (rank == i)
+        {
+            MPI_Recv(&recvNumCities, 1, MPI_INT, i + lastpower, NUM_CITIES_TAG, comm, &status);
+            printf("process %i is about to receive %i cities from process %i\n", rank, recvNumCities, i + lastpower);
+            recvCities = (City *)malloc(sizeof(City) * recvNumCities);
+            MPI_Recv(recvCities, recvNumCities, mpi_city_type, i + lastpower, tag, comm, &status);
+            MPI_Recv(&recvPathCost, 1, MPI_DOUBLE, i + lastpower, PATH_COST_TAG, comm, &status);
+            BlockSolution recvBlock;
+            for (int x = 0; x < recvNumCities; x++)
+            {
+                path.push_back(recvCities[x]);
+            }
+            recvBlock.path = path;
+            recvBlock.cost = recvPathCost;
+            recvBlock.blockId = rank;
+            solution = mergeBlocks(solution, recvBlock);
+        }
+    }
+    printf("process %i made it down to nearest power of 2\n", rank);
+    for (int d = 0; d < (int)log2(lastpower); d++)
+        for (int k = 0; k < lastpower; k += 1 << (d + 1))
+        {
+            const int receiver = k;
+            const int sender = k + (1 << d);
+            if (rank == receiver)
+            {
+                MPI_Recv(&recvNumCities, 1, MPI_INT, sender, NUM_CITIES_TAG, comm, &status);
+                recvCities = (City *)malloc(sizeof(City) * recvNumCities);
+                MPI_Recv(recvCities, recvNumCities, mpi_city_type, sender, tag, comm, &status);
+                MPI_Recv(&recvPathCost, 1, MPI_DOUBLE, sender, PATH_COST_TAG, comm, &status);
+
+                BlockSolution recvBlock;
+                path.assign(recvCities, recvCities + recvNumCities);
+                recvBlock.path = path;
+                recvBlock.cost = recvPathCost;
+                recvBlock.blockId = rank;
+                solution = mergeBlocks(solution, recvBlock);
+            }
+            else if (rank == sender)
+            {
+                int numCities = solution.path.size();
+                MPI_Send(&numCities, 1, MPI_INT, receiver, NUM_CITIES_TAG, comm);
+                MPI_Send(&solution.path[0], numCities, mpi_city_type, receiver, tag, comm);
+                MPI_Send(&solution.cost, 1, MPI_DOUBLE, receiver, PATH_COST_TAG, comm);
+            }
+        }
+    return solution;
 }
 
 vector<int> getBlocksPerDim(int numBlocks)
@@ -60,36 +149,40 @@ vector<int> getBlocksPerDim(int numBlocks)
 vector<vector<City>> distributeBlocks(vector<vector<vector<City>>> blockedCities, int numBlocks, int numCitiesPerBlock, MPI_Comm comm)
 {
     vector<vector<City>> blocks = flatten(blockedCities);
-    // int numBlocksForMaster = (int)ceil(numBlocks / (float)(numProcs));
-    int blocksLeft = numBlocks; // - numBlocksForMaster;
-    int blockToSend = 0;        //numBlocksForMaster;
+    int blocksLeft = numBlocks;
+    int blockToSend = 0;
     MPI_Request request;
     int *blocksToSend = (int *)calloc(sizeof(int), numProcs);
-    // printf("sending %i blocks to process %i\n\n", numBlocksForMaster, 0);
+    vector<vector<City>> leftovers;
 
     while (blocksLeft)
     {
         blocksToSend[blocksLeft % numProcs]++;
         blocksLeft--;
     }
+
     for (int i = 0; i < numProcs; i++) // for each worker process
     {
-        // blocksToSend[i] = min((int)ceil((numBlocks) / (float)(numProcs)), blocksLeft);
         printf("sending %i blocks to process %i\n\n", blocksToSend[i], i);
-        // // blocksLeft -= blocksToSend[i];
         MPI_Isend(&blocksToSend[i], 1, MPI_INT, i, NUM_BLOCKS_RECV_TAG, comm, &request);
-        for (int j = 0; j < blocksToSend[i]; j++) // send min(ceil(n / (float)numProcesses), numProcessesLeft) processes
+        for (int j = 0; j < blocksToSend[i]; j++)
         {
-            City *block = (City *)malloc(numCitiesPerBlock * sizeof(City));
-            copy(blocks[blockToSend].begin(), blocks[blockToSend].end(), block);
-            MPI_Isend(block, numCitiesPerBlock, mpi_city_type, i, BLOCK_CITIES_TAG, comm, &request);
+            if (i == 0)
+            {
+                leftovers.push_back(blocks[blockToSend]);
+            }
+            else
+            {
+                City *block = (City *)malloc(numCitiesPerBlock * sizeof(City));
+                copy(blocks[blockToSend].begin(), blocks[blockToSend].end(), block);
+                MPI_Isend(block, numCitiesPerBlock, mpi_city_type, i, BLOCK_CITIES_TAG, comm, &request);
+            }
             blockToSend++;
             blocksLeft--;
         }
     }
     free(blocksToSend);
-
-    return vector<vector<City>>();
+    return leftovers;
 }
 
 inline float swapPairCost(pair<City, City> left, pair<City, City> right)
@@ -138,7 +231,7 @@ BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2)
     cities1 = solution1.path;
     cities2 = solution2.path;
     cities2.pop_back();
-    printPath(cities1);
+    // printPath(cities1);
     printf("best swap is from cities1 %i to cities2 %i and cities2 %i to cities1 %i\n",
            bestSwapEdges.first.first.id, bestSwapEdges.second.first.id, bestSwapEdges.second.second.id, bestSwapEdges.first.second.id);
     while (cities2[0].id != bestSwapEdges.second.first.id)
@@ -148,7 +241,7 @@ BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2)
     // do a final rotation so that the path to add is now essentially in order but backwards
     rotate(cities2.begin(), cities2.begin() + 1, cities2.end());
 
-    printPath(cities2);
+    // printPath(cities2);
     vector<City> path;
     for (int i = 0; i < cities1.size(); i++)
     {
@@ -172,13 +265,13 @@ BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2)
     merged.blockId = procNum;
     merged.cost = solution1.cost + solution2.cost + bestSwapCost - distance(bestSwapEdges.first.first, bestSwapEdges.first.second) - distance(bestSwapEdges.second.first, bestSwapEdges.second.second);
     merged.path = path;
-    printPath(path);
+    // printPath(path);
     return merged;
 }
 int main(int argc, char **argv)
 {
     time_t t;
-    srand(t);
+    srand(0);
 
     struct timespec start, end;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -204,7 +297,7 @@ int main(int argc, char **argv)
 
     MPI_Comm grid_comm;
     vector<int> procDims = getBlocksPerDim(numProcs);
-    int wrap[2] = {0, 0};
+    int wrap[2] = {1, 1};
     MPI_Cart_create(MPI_COMM_WORLD, 2, &procDims[0], wrap, 0, &grid_comm);
     MPI_Comm_rank(grid_comm, &procNum);
     MPI_Status status;
@@ -222,13 +315,11 @@ int main(int argc, char **argv)
         vector<vector<vector<City>>> blockedCities = distributeCities(numCitiesPerBlock, blockedDims[0], blockedDims[1], gridDimX, gridDimY);
         // Distribute our blocks to each processor saving some of the blocks for our main block
         vector<vector<City>> blocksForHead = distributeBlocks(blockedCities, numBlocks, numCitiesPerBlock, grid_comm);
-
         // deal with the leftover block
         for (int i = 0; i < blocksForHead.size(); i++)
         {
             blockSolutions.push_back(tsp(blocksForHead[i]));
         }
-
         // perform a local reduction within the process since we might have multiple blocks per process
         BlockSolution solution1;
         BlockSolution solution2;
@@ -240,10 +331,6 @@ int main(int argc, char **argv)
             blockSolutions.erase(blockSolutions.begin());
             blockSolutions.insert(blockSolutions.begin(), mergeBlocks(solution1, solution2));
         }
-        // figure out how to do a reduction across the rows using the TSP-merge technique
-        // then do it across the columns
-
-        // should have the result collected here in process 0 due to how reductions work
     }
     else
     {
@@ -277,12 +364,16 @@ int main(int argc, char **argv)
             blockSolutions.insert(blockSolutions.begin(), mergeBlocks(solution1, solution2));
         }
     }
+    // perform the full reduction here
+    MPI_Barrier(grid_comm);
+    BlockSolution finalSolution = MPI_ManualReduce(blockSolutions[0], grid_comm);
+
     if (procNum == 0)
     {
         clock_gettime(CLOCK_MONOTONIC_RAW, &end);
         uint64_t diff = (1000000000L * (end.tv_sec - start.tv_sec) + end.tv_nsec - start.tv_nsec) / 1e6;
 
-        printf("TSP ran in %llu ms for %lu cities\n", (long long unsigned int)diff, numBlocks * numCitiesPerBlock);
+        printf("TSP ran in %llu ms for %lu cities and the trip cost %f\n", (long long unsigned int)diff, numBlocks * numCitiesPerBlock, finalSolution.cost);
     }
 
     MPI_Finalize();

@@ -51,6 +51,8 @@ struct sortByY
         return (city1.y < city2.y);
     }
 };
+BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2);
+
 BlockSolution tsp(vector<City> cities);
 
 vector<vector<vector<City>>> distributeCities(int numCitiesPerBlock, int numBlocksInRow, int numBlocksInCol, int gridDimX, int gridDimY);

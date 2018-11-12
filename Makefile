@@ -17,5 +17,5 @@ clean:
 	$(CC) -c $(CFLAGS) $< -o $@
 
 run: all
-	mpirun -np 13 ./tsp 15 16 500 500 	
+	mpirun -np 3 ./tsp 10 6 500 500 	
 	# ./tsp 15 4 500 500
