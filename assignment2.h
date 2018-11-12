@@ -55,9 +55,9 @@ BlockSolution mergeBlocks(BlockSolution solution1, BlockSolution solution2);
 
 BlockSolution tsp(vector<City> cities);
 
-vector<vector<vector<City>>> distributeCities(int numCitiesPerBlock, int numBlocksInRow, int numBlocksInCol, int gridDimX, int gridDimY);
+vector<vector<City>> distributeCities(int numCitiesPerBlock, int numBlocksInRow, int numBlocksInCol, int gridDimX, int gridDimY);
 
-vector<vector<City>> distributeBlocks(vector<vector<vector<City>>> blockedCities, int numBlocks, int numCitiesPerBlock, MPI_Comm comm);
+vector<vector<City>> distributeBlocks(vector<vector<City>> blockedCities, int numBlocks, int numCitiesPerBlock, MPI_Comm comm);
 
 template <typename T>
 vector<T> flatten(const vector<vector<T>> &v)
@@ -75,7 +75,7 @@ vector<T> flatten(const vector<vector<T>> &v)
 
 vector<City> convPathToCityPath(vector<City> cities, vector<int> positions)
 {
-    vector<City> truePath{};
+    vector<City> truePath;
     for (int cityNum : positions)
     {
         truePath.push_back(cities[cityNum]);
